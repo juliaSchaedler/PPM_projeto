@@ -12,7 +12,7 @@ forma correta e rápida.
 
 - **Simulação de Clientes**: Vários clientes geram pedidos aleatórios para diferentes produtos.
 - **Processamento Concorrente**: O sistema processa pedidos usando múltiplas threads para garantir que a atualização do estoque ocorra de forma segura e eficiente.
-- **Métricas de Desempenho**: Coleta de métricas sobre pedidos processados e pedidos inválidos (por falta de estoque) usando a biblioteca Prometheus.
+- **Métricas de Desempenho**: Coleta de métricas sobre pedidos processados e pedidos inválidos (por falta de estoque) usando a biblioteca Prometheus + Grafana para visualização em dashboards.
 - **Atualização do Estoque**: O estoque é atualizado em tempo real, e as informações são impressas no console.
 
 ## Tecnologias Utilizadas:
