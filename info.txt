@@ -1,0 +1,23 @@
+Passo a passo:
+
+1. Instalar Docker;
+2. No terminal, entrar na pasta do projeto e executar:
+
+
+network create minha-rede
+
+docker run -d --name prometheus --network minha-rede  -p 9090:9090 -v C:\Users\Win\Documentos\PPM\prometheus.yml:/etc/prometheus/prometheus.yml prom/prometheus
+
+docker run -d --name grafana --network minha-rede -p 3000:3000 grafana/grafana
+
+3. Entrar no localhost:3000 (usuário e senha: admin);
+
+4. No menu: connections -> data sources;
+
+5. Add nova data source -> selecionar prometheus -> colar na url: "http://prometheus:9090";
+
+6. Save & test;
+
+7. Criar os dashboards de acordo com as métricas feitas com o prometheus.
+
+Verificar métricas: http://localhost:8000/metrics
