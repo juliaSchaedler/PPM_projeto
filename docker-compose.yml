@@ -1,0 +1,59 @@
+version: '3.8'
+
+services:
+  rabbitmq_service:
+    image: rabbitmq:3-management
+    container_name: rabbitmq_service
+    ports:
+      - "5672:5672"
+      - "15672:15672"  # RabbitMQ Management UI
+    environment:
+      RABBITMQ_DEFAULT_USER: guest
+      RABBITMQ_DEFAULT_PASS: guest
+    networks:
+      - app_network
+    mem_limit: 1g  # Limite de memória de 1GB
+    cpu_shares: 1024  # Limite de CPU
+    restart: always
+
+  mysql_service:
+    image: mysql:8.0
+    container_name: mysql_service
+    ports:
+      - "3306:3306"
+    environment:
+      MYSQL_ROOT_PASSWORD: root
+      MYSQL_DATABASE: promo_app
+      MYSQL_USER: app_user
+      MYSQL_PASSWORD: app_password
+    volumes:
+      - mysql_data:/var/lib/mysql
+    networks:
+      - app_network
+
+  python_service:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: python_service
+    depends_on:
+      - rabbitmq_service
+      - mysql_service
+    environment:
+      - RABBITMQ_HOST=rabbitmq_service
+      - MYSQL_HOST=mysql_service
+      - MYSQL_USER=app_user
+      - MYSQL_PASSWORD=app_password
+      - MYSQL_DATABASE=promo_app
+    networks:
+      - app_network
+    volumes:
+      - .:/app  # Monta o código local para desenvolvimento
+    command: ["python", "main.py"]
+
+volumes:
+  mysql_data:
+
+networks:
+  app_network:
+    driver: bridge
