@@ -1,7 +1,0 @@
-global:
-  scrape_interval: 15s  # Intervalo de captura de dados
-
-scrape_configs:
-  - job_name: 'estoque'
-    static_configs:
-      - targets: ['localhost:8000']
