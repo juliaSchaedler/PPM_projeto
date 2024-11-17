@@ -8,6 +8,10 @@ como overselling ou crashes do sistema devido à alta demanda. Os alunos impleme
 para balancear a carga entre os servidores, reduzir tempos de resposta, e assegurar que as transações sejam processadas de
 forma correta e rápida.
 
+## Diagrama
+
+![digrama de uma aplicação para gerenciamento de compras](diagrama.png)
+
 ## Funcionalidades:
 
 - **Simulação de Clientes**: Vários clientes geram pedidos aleatórios para diferentes produtos.
@@ -23,11 +27,4 @@ forma correta e rápida.
 - `random` para gerar pedidos aleatórios
 - `json` para formatação de dados
 - `colorama` para colorir a saída do console
-- `prometheus_client` para monitoramento de métricas
 
-## Dependências:
-- Certifique-se de ter as dependências instaladas:
-  ```bash
-  pip install colorama prometheus_client
-
-- Para mais informações, seguir info.txt
