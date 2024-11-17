@@ -1,15 +1,34 @@
 import threading
-import queue
 import time
 import random
 import json
+import pika
+import mysql.connector
+from mysql.connector import Error
 from colorama import Fore, Style, init
-from prometheus_client import start_http_server, Counter, Gauge
-from concurrent.futures import ThreadPoolExecutor
 
 init(autoreset=True)
 
-# Estoque inicial
+# Configuração do RabbitMQ
+RABBITMQ_HOST = 'rabbitmq_service'
+MYSQL_HOST = 'mysql_service'
+MYSQL_USER = 'app_user'  # Corrigido para o valor correto
+MYSQL_PASSWORD = 'app_password'  # Corrigido para o valor correto
+MYSQL_DB = 'promo_app'  # Corrigido para o valor correto
+
+# Conexão com RabbitMQ
+while True:
+    try:
+        connection = pika.BlockingConnection(pika.ConnectionParameters(RABBITMQ_HOST))
+        break
+    except pika.exceptions.AMQPConnectionError:
+        print("Aguardando RabbitMQ iniciar...")
+        time.sleep(5)
+
+connection = pika.BlockingConnection(pika.ConnectionParameters(RABBITMQ_HOST))
+channel = connection.channel()
+
+# Configuração inicial
 estoque = {
     'produtoA': 100,
     'produtoB': 50,
@@ -17,102 +36,146 @@ estoque = {
     'produtoD': 30,
     'produtoE': 100
 }
-
-# Criação de locks individuais para cada produto
 locks_por_produto = {produto: threading.Lock() for produto in estoque.keys()}
 
-# Fila de pedidos e fila de pedidos processados
-fila_de_pedidos = queue.Queue()
-fila_de_processados = queue.Queue()
+channel.queue_declare(queue='fila_de_pedidos')
+channel.queue_declare(queue='fila_de_processados')
 
-# Inicializa as métricas de observabilidade
-pedidos_processados = Counter('pedidos_processados_total', 'Total de pedidos processados')
-pedidos_invalidos = Counter('pedidos_invalidos_total', 'Total de pedidos rejeitados por falta de estoque')
-estoque_atual = Gauge('estoque_produto', 'Quantidade em estoque', ['produto'])
+# Função para conectar ao banco de dados
+def conectar_banco():
+    try:
+        conexao = mysql.connector.connect(
+            host=MYSQL_HOST,
+            user=MYSQL_USER,
+            password=MYSQL_PASSWORD,
+            database=MYSQL_DB
+        )
+        return conexao
+    except Error as e:
+        print(f"{Fore.RED}Erro ao conectar no banco de dados: {e}")
+        return None
 
-# Inicia o servidor Prometheus para coletar as métricas na porta 8000
-start_http_server(8000)
-
-# Função para atualizar métricas do estoque
-def atualizar_metricas_estoque():
-    for produto, quantidade in estoque.items():
-        estoque_atual.labels(produto).set(quantidade)
-
-# Função do cliente (gerando pedidos aleatórios)
-def cliente(num_pedidos):
-    for i in range(num_pedidos):
-        produto = random.choice(list(estoque.keys()))
-        quantidade = random.randint(1, 10)
-        pedido = {'produto': produto, 'quantidade': quantidade}
-        
-        # Converte o pedido para JSON
-        pedido_json = json.dumps(pedido)
-        
-        print(f"{Fore.GREEN}Cliente gerou o pedido: {pedido_json}")
-        fila_de_pedidos.put(pedido_json)  # Adiciona o pedido à fila
-        time.sleep(random.uniform(0.1, 0.5))
-
-# Função para processar os pedidos do estoque
-def processador_de_estoque():
-    while True:
+# Função para criar as tabelas caso não existam
+def criar_tabelas():
+    conexao = conectar_banco()
+    if conexao:
+        cursor = conexao.cursor()
         try:
-            # Pega o pedido da fila (formato JSON) e converte de volta para dicionário
-            pedido_json = fila_de_pedidos.get(timeout=2)
-            pedido = json.loads(pedido_json)
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS pedidos (
+                    id INT AUTO_INCREMENT PRIMARY KEY,
+                    produto VARCHAR(255),
+                    quantidade INT
+                )
+            """)
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS estoque (
+                    produto VARCHAR(255) PRIMARY KEY,
+                    quantidade INT
+                )
+            """)
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS erros (
+                    id INT AUTO_INCREMENT PRIMARY KEY,
+                    produto VARCHAR(255),
+                    mensagem TEXT
+                )
+            """)
+            conexao.commit()
+        except Error as e:
+            print(f"{Fore.RED}Erro ao criar tabelas: {e}")
+        finally:
+            cursor.close()
+            conexao.close()
+
+# Chama a função de criação das tabelas
+criar_tabelas()
+
+# Cliente (Produtor)
+def cliente(num_pedidos):
+    connection = pika.BlockingConnection(pika.ConnectionParameters(RABBITMQ_HOST))
+    channel = connection.channel()
+    try:
+        for _ in range(num_pedidos):
+            produto = random.choice(list(estoque.keys()))
+            quantidade = random.randint(1, 10)
+            pedido = {'produto': produto, 'quantidade': quantidade}
+            pedido_json = json.dumps(pedido)
+
+            print(f"{Fore.GREEN}Cliente gerou o pedido: {pedido_json}")
+            channel.basic_publish(exchange='', routing_key='fila_de_pedidos', body=pedido_json)
+            time.sleep(random.uniform(0.1, 0.5))
+    finally:
+        connection.close()
+
+# Processador de Estoque (Consumidor)
+def processador_de_estoque():
+    connection = pika.BlockingConnection(pika.ConnectionParameters(RABBITMQ_HOST))
+    channel = connection.channel()
+
+    def callback(ch, method, properties, body):
+        try:
+            pedido = json.loads(body)
             produto = pedido['produto']
             quantidade = pedido['quantidade']
 
-            # Seção crítica específica para o produto
             with locks_por_produto[produto]:
-                if estoque[produto] >= quantidade:
-                    estoque[produto] -= quantidade
-                    print(f"{Fore.BLUE}Pedido processado: {pedido}. Estoque atualizado: {estoque[produto]} unidades restantes.")
-                    
-                    # Adiciona o pedido processado na fila de saída
-                    fila_de_processados.put(json.dumps(pedido))
-                    pedidos_processados.inc()  # Incrementa a métrica de pedidos processados
-                else:
-                    print(f"{Fore.RED}Estoque insuficiente para {produto}. Pedido não processado.")
-                    pedidos_invalidos.inc()  # Incrementa a métrica de pedidos inválidos
-            
-            # Atualiza as métricas do estoque
-            atualizar_metricas_estoque()
-            fila_de_pedidos.task_done()
-            
-        except queue.Empty:
-            print(f"{Fore.YELLOW}Nenhum pedido na fila.")
-            break
+                conexao = conectar_banco()
+                if conexao:
+                    cursor = conexao.cursor()
+                    try:
+                        # Verifica estoque
+                        if estoque[produto] >= quantidade:
+                            estoque[produto] -= quantidade
+                            print(f"{Fore.BLUE}Pedido processado: {pedido}. Estoque atualizado: {estoque[produto]} unidades restantes.")
 
-# Configuração das threads dos clientes
+                            # Atualiza banco
+                            cursor.execute("INSERT INTO pedidos (produto, quantidade) VALUES (%s, %s)", (produto, quantidade))
+                            cursor.execute("UPDATE estoque SET quantidade = %s WHERE produto = %s", (estoque[produto], produto))
+                            conexao.commit()
+
+                            # Publica pedido processado
+                            channel.basic_publish(exchange='', routing_key='fila_de_processados', body=json.dumps(pedido))
+                        else:
+                            print(f"{Fore.RED}Estoque insuficiente para {produto}. Pedido não processado.")
+                            cursor.execute("INSERT INTO erros (produto, mensagem) VALUES (%s, %s)", (produto, 'Estoque insuficiente'))
+                            conexao.commit()
+                    except Error as e:
+                        print(f"{Fore.RED}Erro no banco de dados: {e}")
+                    finally:
+                        cursor.close()
+                        conexao.close()
+
+            # Confirma que a mensagem foi processada
+            ch.basic_ack(delivery_tag=method.delivery_tag)
+
+        except json.JSONDecodeError as e:
+            print(f"{Fore.RED}Erro ao decodificar JSON: {e}")
+        except Exception as e:
+            print(f"{Fore.RED}Erro no processamento do pedido: {e}")
+
+    # Limitar o número de mensagens consumidas
+    mensagens_consumidas = 0
+    while mensagens_consumidas < 50:  # Limite de mensagens consumidas
+        channel.basic_consume(queue='fila_de_pedidos', on_message_callback=callback, auto_ack=False)
+        channel.start_consuming()
+        mensagens_consumidas += 1
+
+# Configuração de threads
 num_clientes = 3
 num_pedidos_por_cliente = 10
 
-# Iniciar clientes
-clientes = []
-for i in range(num_clientes):
-    t = threading.Thread(target=cliente, args=(num_pedidos_por_cliente,))
-    clientes.append(t)
+clientes = [threading.Thread(target=cliente, args=(num_pedidos_por_cliente,)) for _ in range(num_clientes)]
+processadores = [threading.Thread(target=processador_de_estoque) for _ in range(5)]  # Aumentei o número de processadores
+
+# Inicia threads
+for t in clientes + processadores:
     t.start()
 
-# Usar ThreadPoolExecutor para gerenciar processadores de estoque (balanceamento de carga)
-num_processadores = 3
-with ThreadPoolExecutor(max_workers=num_processadores) as executor:
-    for _ in range(num_processadores):
-        executor.submit(processador_de_estoque)
-
-# Aguardar que todas as threads (clientes) finalizarem
-for t in clientes:
+# Aguarda conclusão
+for t in clientes + processadores:
     t.join()
 
-# Mostra os pedidos processados
-print(f"{Fore.MAGENTA}{Style.BRIGHT}Pedidos Processados:")
-while not fila_de_processados.empty():
-    pedido_processado_json = fila_de_processados.get()
-    print(f"{Fore.MAGENTA}{Style.BRIGHT} {pedido_processado_json}")
-
-# Mostra o estoque final
 print(f"{Fore.CYAN}{Style.BRIGHT}Estoque Final:")
 for produto, quantidade in estoque.items():
-    print(f"{Fore.CYAN}{Style.BRIGHT} Produto: {produto} | {quantidade} unidades restantes")
-
-print(f"{Fore.CYAN}End")
+    print(f"{Fore.CYAN}Produto: {produto} | {quantidade} unidades restantes")
